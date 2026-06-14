@@ -1,117 +1,76 @@
-const fs = require("fs");
-const { PNG } = require("pngjs");
-const bmp = require("bmp-js");
+const { Readable }   = require("stream");
+const { generate }   = require("./src/pipeline");
+const { wasmEncode, wasmBackend } = require("./src/encoders/wasmEncoder");
 
-/**
- * Decode base64 → pixel array
- */
-const parseBase64Pixels = (base64) =>
-  Buffer.from(base64, "base64")
-    .toString("utf-8")
-    .split(",")
-    .map(v => parseInt(v.trim(), 10))
-    .filter(Number.isFinite);
-
-/**
- * Validate pixel buffer
- */
-const assertPixels = (pixels, width, height, channels = 3) => {
-  const expected = width * height * channels;
-  if (pixels.length !== expected) {
-    throw new Error(`Expected ${expected} values, got ${pixels.length}`);
-  }
-};
-
-/**
- * RGB → RGBA
- */
-const toRGBA = (rgb) => {
-  const rgba = Buffer.alloc((rgb.length / 3) * 4);
-
-  for (let i = 0, j = 0; i < rgb.length; i += 3, j += 4) {
-    rgba[j]     = rgb[i];
-    rgba[j + 1] = rgb[i + 1];
-    rgba[j + 2] = rgb[i + 2];
-    rgba[j + 3] = 255;
-  }
-
-  return rgba;
-};
-
-/**
- * Encode PNG → Buffer
- */
-const encodePNG = (rgba, width, height) =>
-  new Promise((resolve, reject) => {
-    const png = new PNG({ width, height });
-    png.data = rgba;
-
-    const chunks = [];
-
-    png.pack()
-      .on("data", chunk => chunks.push(chunk))
-      .on("end", () => resolve(Buffer.concat(chunks)))
-      .on("error", reject);
-  });
-
-/**
- * Encode BMP → Buffer
- */
-const encodeBMP = (rgba, width, height) =>
-  bmp.encode({ data: rgba, width, height }).data;
-
-/**
- * Save helper (optional)
- */
-const save = (path, buffer) => fs.writeFileSync(path, buffer);
-
-/**
- * Core pipeline (pure)
- */
-async function generate({ base64, width, height, writeFiles = true }) {
-  const pixels = parseBase64Pixels(base64);
-
-  assertPixels(pixels, width, height);
-
-  const rgba = toRGBA(pixels);
-
-  const pngBuffer = await encodePNG(rgba, width, height);
-  const bmpBuffer = encodeBMP(rgba, width, height);
-
-  if (writeFiles) {
-    save("output.png", pngBuffer);
-    save("output.bmp", bmpBuffer);
-  }
-
-  return {
-    png: pngBuffer.toString("base64"),
-    bmp: bmpBuffer.toString("base64"),
-    buffers: {
-      png: pngBuffer,
-      bmp: bmpBuffer
-    }
-  };
-}
-
-/**
- * Example (CLI-style entry)
- */
 async function main() {
-  const width = 2;
+  const width  = 2;
   const height = 2;
-
   const pixelString = "255,0,0, 0,255,0, 0,0,255, 255,255,0";
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // 1. Base64 input  (original behavior, writes PNG + BMP to disk)
+  // ─────────────────────────────────────────────────────────────────────────
+  console.log("─── 1. Base64 input ──────────────────────────────────────────");
   const base64 = Buffer.from(pixelString).toString("base64");
+  const r1 = await generate({ base64, width, height, formats: ["png", "bmp"], writeFiles: true });
+  console.log("PNG bytes:", r1.buffers.png.length, " → output.png");
+  console.log("BMP bytes:", r1.buffers.bmp.length, " → output.bmp");
 
-  const result = await generate({ base64, width, height });
+  // ─────────────────────────────────────────────────────────────────────────
+  // 2. Binary input  (fastest path — raw RGB bytes, no CSV/Base64 overhead)
+  // ─────────────────────────────────────────────────────────────────────────
+  console.log("\n─── 2. Binary input ─────────────────────────────────────────");
+  const binary = Buffer.from([255,0,0, 0,255,0, 0,0,255, 255,255,0]);
+  const r2 = await generate({ binary, width, height, formats: ["png", "jpeg", "webp"] });
+  console.log("PNG  bytes:", r2.buffers.png.length);
+  console.log("JPEG bytes:", r2.buffers.jpeg.length);
+  console.log("WebP bytes:", r2.buffers.webp.length);
 
-  console.log("PNG Base64:\n", result.png);
-  console.log("\nBMP Base64:\n", result.bmp);
-}
+  // ─────────────────────────────────────────────────────────────────────────
+  // 3. Streaming input  (low-memory path for large images)
+  // ─────────────────────────────────────────────────────────────────────────
+  console.log("\n─── 3. Streaming input ──────────────────────────────────────");
+  const readable = Readable.from([pixelString]);
+  const r3 = await generate({ stream: readable, width, height, formats: ["png"] });
+  console.log("PNG from stream, bytes:", r3.buffers.png.length);
 
-if (require.main === module) {
-  main().catch(err => {
-    console.error("❌", err.message);
-    process.exit(1);
+  // ─────────────────────────────────────────────────────────────────────────
+  // 4. JPEG + WebP output with quality options
+  // ─────────────────────────────────────────────────────────────────────────
+  console.log("\n─── 4. JPEG + WebP output ───────────────────────────────────");
+  const r4 = await generate({
+    base64,
+    width,
+    height,
+    formats: ["jpeg", "webp"],
+    writeFiles: true,
+    encodeOptions: { jpeg: { quality: 85 }, webp: { quality: 75 } }
   });
+  console.log("JPEG bytes:", r4.buffers.jpeg.length, " → output.jpg");
+  console.log("WebP bytes:", r4.buffers.webp.length, " → output.webp");
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // 5. WASM encoder  (tries @img/sharp-wasm32, falls back to native sharp)
+  // ─────────────────────────────────────────────────────────────────────────
+  console.log("\n─── 5. WASM encoder ─────────────────────────────────────────");
+  console.log("Backend:", wasmBackend);
+  const rgbaDemo = Buffer.from([
+    255, 0,   0,   255,
+    0,   255, 0,   255,
+    0,   0,   255, 255,
+    255, 255, 0,   255,
+  ]);
+  const wasmPNG  = await wasmEncode(rgbaDemo, width, height, "png");
+  const wasmJPEG = await wasmEncode(rgbaDemo, width, height, "jpeg", { quality: 90 });
+  const wasmWebP = await wasmEncode(rgbaDemo, width, height, "webp", { lossless: true });
+  console.log("WASM PNG  bytes:", wasmPNG.length);
+  console.log("WASM JPEG bytes:", wasmJPEG.length);
+  console.log("WASM WebP bytes:", wasmWebP.length);
+
+  console.log("\nDone.");
 }
+
+main().catch(err => {
+  console.error("❌", err.message);
+  process.exit(1);
+});

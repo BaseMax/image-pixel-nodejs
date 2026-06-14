@@ -1,18 +1,21 @@
 # image-pixel-nodejs
 
-A minimal, clean, and efficient Node.js pipeline to generate images (**PNG** and **BMP**) from raw pixel data.
+A minimal, clean, and efficient Node.js pipeline to generate images (**PNG**, **BMP**, **JPEG**, **WebP**) from raw pixel data.
 
-This project converts a Base64-encoded pixel buffer into an image, saves it, and returns Base64-encoded outputs.
+Supports Base64, raw binary, and streaming input — with a built-in REST API.
 
 ---
 
 ## ✨ Features
 
-* Convert **Base64 → pixel buffer → image**
-* Supports **PNG** and **BMP**
+* Multiple **input formats**: Base64 CSV, raw binary buffer, or readable stream
+* Multiple **output formats**: PNG, BMP, JPEG, WebP (any combination)
+* **Streaming parser** for large pixel datasets (low memory)
+* **Binary input** path — no CSV/Base64 overhead, fastest ingestion
+* **REST API** (Express) with JSON, binary, and streaming endpoints
+* **WASM encoder** — uses `@img/sharp-wasm32` when available, falls back to native `sharp`
+* All encodings run in parallel via `Promise.all`
 * Clean, DRY, and composable architecture
-* Works fully in-memory (optional file output)
-* Simple and extensible pipeline design
 
 ---
 
@@ -24,132 +27,189 @@ cd image-pixel-nodejs
 npm install
 ```
 
+Optional — true WebAssembly encoder (no native bindings required):
+
+```bash
+npm install @img/sharp-wasm32
+```
+
 ---
 
 ## 🚀 Usage
 
-Run the example:
+### CLI demo (all features)
 
 ```bash
 node app.js
 ```
 
+### REST API server
+
+```bash
+node src/server.js
+# or
+npm run server
+```
+
 ---
 
-## 📥 Input Format
+## 📥 Input Formats
 
-The input must be:
-
-* Base64-encoded string of pixel values
-* Pixel values must be:
-
-  * Comma-separated
-  * In **RGB format**
-  * Example:
+### 1. Base64 (original)
 
 ```text
+Base64-encoded comma-separated RGB values:
 "255,0,0, 0,255,0, 0,0,255, 255,255,0"
 ```
 
-This represents:
+### 2. Binary (fastest)
 
-* Red
-* Green
-* Blue
-* Yellow
+Raw RGB bytes — 3 bytes per pixel, no encoding overhead.
+
+```js
+const binary = Buffer.from([255, 0, 0,   0, 255, 0,   0, 0, 255,   255, 255, 0]);
+```
+
+### 3. Stream (low-memory)
+
+Any `Readable` that emits comma-separated RGB integers. The parser reassembles tokens split across chunk boundaries.
 
 ---
 
-## 📐 Image Requirements
+## ⚙️ Pipeline API
 
-You must provide:
+### `generate(options)` — `src/pipeline.js`
 
-* `width`
-* `height`
-
-Constraint:
-
-```
-pixels.length === width × height × 3
-```
-
----
-
-## 🧠 How It Works
-
-Pipeline:
-
-```
-Base64
-  ↓
-Decode
-  ↓
-String → Pixel Array
-  ↓
-RGB → RGBA
-  ↓
-Encode → PNG + BMP
-  ↓
-(Optional) Save to disk
-  ↓
-Return Base64 output
-```
-
----
-
-## 🧪 Example
-
-```javascript
-const width = 2;
-const height = 2;
-
-const pixelString = "255,0,0, 0,255,0, 0,0,255, 255,255,0";
-const base64 = Buffer.from(pixelString).toString("base64");
+```js
+const { generate } = require("./src/pipeline");
 
 const result = await generate({
-  base64,
-  width,
-  height
+  base64,           // string  — Base64-encoded CSV pixels
+  // binary,        // Buffer  — raw RGB bytes  (pick one of the three)
+  // stream,        // Readable — CSV stream
+  width:  2,
+  height: 2,
+  formats: ["png", "bmp", "jpeg", "webp"],  // any subset
+  writeFiles: true,          // save files to outputDir (default: false)
+  outputDir: ".",            // where to save (default: ".")
+  encodeOptions: {
+    jpeg: { quality: 90, progressive: false },
+    webp: { quality: 80, lossless: false }
+  }
 });
-
-console.log(result.png);
-console.log(result.bmp);
 ```
 
----
-
-## 📤 Output
-
-* `output.png`
-* `output.bmp`
-* Base64 strings printed to console
-
----
-
-## ⚙️ API
-
-### `generate(options)`
-
-#### Parameters:
-
-| Name       | Type   | Description                           |
-| ---------- | ------ | ------------------------------------- |
-| base64     | string | Base64-encoded pixel string           |
-| width      | number | Image width                           |
-| height     | number | Image height                          |
-| writeFiles | bool   | (optional) save files (default: true) |
-
-#### Returns:
+#### Returns
 
 ```js
 {
-  png: string,  // Base64
-  bmp: string,  // Base64
+  png:  string,   // Base64 (if requested)
+  bmp:  string,
+  jpeg: string,
+  webp: string,
   buffers: {
-    png: Buffer,
-    bmp: Buffer
+    png:  Buffer,
+    bmp:  Buffer,
+    jpeg: Buffer,
+    webp: Buffer,
   }
 }
+```
+
+---
+
+## 🌐 REST API
+
+Start the server:
+
+```bash
+node src/server.js        # default port 3000
+PORT=8080 node src/server.js
+```
+
+### `GET /health`
+
+```json
+{ "status": "ok", "version": "2.0.0" }
+```
+
+### `POST /generate` — Base64 JSON input
+
+```bash
+curl -X POST http://localhost:3000/generate \
+  -H "Content-Type: application/json" \
+  -d '{
+    "base64": "MjU1LDAsMCwgMCwyNTUsMCwgMCwwLDI1NSwgMjU1LDI1NSww",
+    "width": 2,
+    "height": 2,
+    "formats": ["png", "jpeg", "webp"],
+    "encodeOptions": { "jpeg": { "quality": 85 } }
+  }'
+```
+
+### `POST /generate/binary` — Raw RGB bytes
+
+```bash
+curl -X POST \
+  "http://localhost:3000/generate/binary?width=2&height=2&formats=png,jpeg" \
+  -H "Content-Type: application/octet-stream" \
+  --data-binary $'\xff\x00\x00\x00\xff\x00\x00\x00\xff\xff\xff\x00'
+```
+
+### `POST /generate/stream` — Streaming CSV pixels
+
+```bash
+echo "255,0,0, 0,255,0, 0,0,255, 255,255,0" | \
+  curl -X POST \
+    "http://localhost:3000/generate/stream?width=2&height=2&formats=png,bmp" \
+    -H "Content-Type: text/plain" \
+    --data-binary @-
+```
+
+---
+
+## 🔩 WASM Encoder
+
+`src/encoders/wasmEncoder.js` resolves the encoder at startup:
+
+1. **`@img/sharp-wasm32`** — true WebAssembly build (no native addons, works in restricted environments)
+2. **`sharp`** — native libvips build (fallback)
+
+```js
+const { wasmEncode, wasmBackend } = require("./src/encoders/wasmEncoder");
+
+console.log(wasmBackend); // "wasm32" or "native"
+
+const png  = await wasmEncode(rgbaBuffer, width, height, "png");
+const jpeg = await wasmEncode(rgbaBuffer, width, height, "jpeg", { quality: 90 });
+const webp = await wasmEncode(rgbaBuffer, width, height, "webp", { lossless: true });
+```
+
+---
+
+## 📐 Constraint
+
+```
+pixels.length === width × height × 3   (for base64 / stream inputs)
+buffer.length === width × height × 3   (for binary input)
+```
+
+---
+
+## 🧠 Pipeline
+
+```
+Input (base64 / binary / stream)
+  ↓
+Parse & validate
+  ↓
+RGB → RGBA
+  ↓
+Parallel encode → PNG + BMP + JPEG + WebP
+  ↓
+(Optional) save to disk
+  ↓
+Return { base64 strings + raw Buffers }
 ```
 
 ---
@@ -158,11 +218,21 @@ console.log(result.bmp);
 
 ```
 .
-├── app.js
-├── output.png
-├── output.bmp
+├── app.js                     CLI demo (all features)
+├── src/
+│   ├── pipeline.js            Core generate() function
+│   ├── server.js              Express REST API
+│   ├── parsers/
+│   │   ├── base64Parser.js    Base64 → pixel array
+│   │   ├── binaryParser.js    Raw Buffer → RGBA
+│   │   └── streamingParser.js Transform stream for CSV pixels
+│   └── encoders/
+│       ├── pngEncoder.js      pngjs
+│       ├── bmpEncoder.js      bmp-js
+│       ├── jpegEncoder.js     sharp (JPEG)
+│       ├── webpEncoder.js     sharp (WebP)
+│       └── wasmEncoder.js     @img/sharp-wasm32 → sharp fallback
 ├── package.json
-├── package-lock.json
 └── README.md
 ```
 
@@ -170,20 +240,19 @@ console.log(result.bmp);
 
 ## ⚡ Performance Notes
 
-* Time complexity: **O(n)**
-* Memory: linear to pixel count
-* BMP encoding is faster than PNG
-* Avoid `.split(",")` for very large inputs (use streaming)
+| Input       | Overhead        | Best for               |
+|-------------|-----------------|------------------------|
+| binary      | none            | server-to-server calls |
+| base64      | decode + CSV    | general use            |
+| stream      | chunked CSV     | large images           |
 
----
-
-## 🔧 Future Improvements
-
-* Streaming parser for large pixel data
-* Binary input format (faster than Base64)
-* Web API (Express / Fastify)
-* WebAssembly-based encoders
-* Support for JPEG / WebP
+| Encoder     | Backend         | Formats          |
+|-------------|-----------------|------------------|
+| pngEncoder  | pngjs (pure JS) | PNG              |
+| bmpEncoder  | bmp-js (pure JS)| BMP              |
+| jpegEncoder | sharp / libvips | JPEG             |
+| webpEncoder | sharp / libvips | WebP             |
+| wasmEncoder | sharp-wasm32    | PNG, JPEG, WebP  |
 
 ---
 

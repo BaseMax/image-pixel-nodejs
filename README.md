@@ -162,6 +162,7 @@ console.log(result.bmp);
 ├── output.png
 ├── output.bmp
 ├── package.json
+├── package-lock.json
 └── README.md
 ```
 
@@ -186,15 +187,14 @@ console.log(result.bmp);
 
 ---
 
+## ⭐ Contributing
+
+Pull requests are welcome. For major changes, please open an issue first.
+
+---
+
 ## 📜 License
 
 GPL-3.0 License
 
-Copyright (c) 2026
-**Seyyed Ali Mohammadiyeh (Max Base)**
-
----
-
-## ⭐ Contributing
-
-Pull requests are welcome. For major changes, please open an issue first.
+Copyright (c) 2026 **Seyyed Ali Mohammadiyeh (Max Base)**

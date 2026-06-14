@@ -1,5 +1,6 @@
 {
   "dependencies": {
+    "bmp-js": "^0.1.0",
     "pngjs": "^7.0.0"
   }
 }

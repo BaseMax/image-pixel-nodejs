@@ -1,9 +1,17 @@
 const fs = require("fs");
 const { PNG } = require("pngjs");
+const bmp = require("bmp-js");
 
 /**
- * Convert input string → pixel array
- * Example input: "255,0,0, 0,255,0, 0,0,255"
+ * Step 1: Decode Base64 → string
+ */
+function decodeBase64ToString(base64) {
+  return Buffer.from(base64, "base64").toString("utf-8");
+}
+
+/**
+ * Step 2: Convert string → pixel array
+ * Supports: "255,0,0, 0,255,0, ..."
  */
 function parsePixelString(input) {
   return input
@@ -13,73 +21,116 @@ function parsePixelString(input) {
 }
 
 /**
- * Create PNG from RGB pixel array
+ * Step 3: Validate pixel buffer
  */
-function createImage(pixels, width, height, outputFile) {
-  const png = new PNG({ width, height });
-
-  const expectedLength = width * height * 3;
-  if (pixels.length !== expectedLength) {
+function validatePixels(pixels, width, height, channels = 3) {
+  const expected = width * height * channels;
+  if (pixels.length !== expected) {
     throw new Error(
-      `Invalid pixel data length. Expected ${expectedLength}, got ${pixels.length}`
+      `Invalid pixel length: expected ${expected}, got ${pixels.length}`
     );
   }
+}
 
-  let pxIndex = 0;
-
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      const idx = (width * y + x) << 2;
-
-      png.data[idx]     = pixels[pxIndex++]; // R
-      png.data[idx + 1] = pixels[pxIndex++]; // G
-      png.data[idx + 2] = pixels[pxIndex++]; // B
-      png.data[idx + 3] = 255;               // A
-    }
-  }
-
+/**
+ * Step 4: Create PNG
+ */
+function createPNG(pixels, width, height, outputPath) {
   return new Promise((resolve, reject) => {
-    const stream = fs.createWriteStream(outputFile);
+    const png = new PNG({ width, height });
+
+    let p = 0;
+
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const idx = (width * y + x) << 2;
+
+        png.data[idx]     = pixels[p++]; // R
+        png.data[idx + 1] = pixels[p++]; // G
+        png.data[idx + 2] = pixels[p++]; // B
+        png.data[idx + 3] = 255;         // A
+      }
+    }
+
+    const stream = fs.createWriteStream(outputPath);
     png.pack().pipe(stream);
 
-    stream.on("finish", () => resolve());
+    stream.on("finish", resolve);
     stream.on("error", reject);
   });
 }
 
 /**
- * Convert file → Base64
+ * Step 5: Create BMP
  */
-function fileToBase64(path) {
-  const buffer = fs.readFileSync(path);
-  return buffer.toString("base64");
+function createBMP(pixels, width, height, outputPath) {
+  const rgbaBuffer = Buffer.alloc(width * height * 4);
+
+  let p = 0;
+
+  for (let i = 0; i < width * height; i++) {
+    rgbaBuffer[i * 4]     = pixels[p++]; // R
+    rgbaBuffer[i * 4 + 1] = pixels[p++]; // G
+    rgbaBuffer[i * 4 + 2] = pixels[p++]; // B
+    rgbaBuffer[i * 4 + 3] = 255;         // A
+  }
+
+  const rawData = {
+    data: rgbaBuffer,
+    width,
+    height
+  };
+
+  const bmpData = bmp.encode(rawData);
+  fs.writeFileSync(outputPath, bmpData.data);
 }
 
 /**
- * MAIN
+ * Step 6: File → Base64
  */
-async function main() {
-    const input = "255,0,0, 0,255,0, 0,0,255, 255,255,0";
-
-    const width = 2;
-    const height = 2;
-
-    const outputFile = "output.png";
-
-    try {
-        const pixels = parsePixelString(input);
-
-        await createImage(pixels, width, height, outputFile);
-
-        console.log("✅ Image saved:", outputFile);
-
-        const base64 = fileToBase64(outputFile);
-
-        console.log("\n📦 Base64:");
-        console.log(base64);
-    } catch (err) {
-        console.error("❌ Error:", err.message);
-    }
+function fileToBase64(path) {
+  return fs.readFileSync(path).toString("base64");
 }
 
-main();
+/**
+ * MAIN PIPELINE
+ */
+async function generateImagesFromBase64(base64Input, width, height) {
+  try {
+    const decoded = decodeBase64ToString(base64Input);
+
+    const pixels = parsePixelString(decoded);
+
+    validatePixels(pixels, width, height, 3);
+
+    const pngFile = "output.png";
+    const bmpFile = "output.bmp";
+
+    await createPNG(pixels, width, height, pngFile);
+    createBMP(pixels, width, height, bmpFile);
+
+    console.log("✅ PNG + BMP generated");
+
+    const pngBase64 = fileToBase64(pngFile);
+    const bmpBase64 = fileToBase64(bmpFile);
+
+    console.log("\n📦 PNG Base64:\n", pngBase64);
+    console.log("\n📦 BMP Base64:\n", bmpBase64);
+
+  } catch (err) {
+    console.error("❌ Error:", err.message);
+  }
+}
+
+/**
+ * EXAMPLE
+ */
+
+const pixelString = "255,0,0, 0,255,0, 0,0,255, 255,255,0";
+
+const base64Input = Buffer.from(pixelString).toString("base64");
+
+const width = 2;
+const height = 2;
+
+generateImagesFromBase64(base64Input, width, height);
